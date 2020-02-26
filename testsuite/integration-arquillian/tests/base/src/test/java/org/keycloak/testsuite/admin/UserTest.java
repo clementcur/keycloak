@@ -22,15 +22,11 @@ import org.jboss.arquillian.container.test.api.Deployment;
 import org.jboss.arquillian.drone.api.annotation.Drone;
 import org.jboss.arquillian.graphene.page.Page;
 import org.jboss.arquillian.test.api.ArquillianResource;
-import org.jboss.shrinkwrap.api.spec.WebArchive;
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
-import org.keycloak.admin.client.resource.IdentityProviderResource;
-import org.keycloak.admin.client.resource.RealmResource;
-import org.keycloak.admin.client.resource.RoleMappingResource;
-import org.keycloak.admin.client.resource.UserResource;
-import org.keycloak.admin.client.resource.UsersResource;
+import org.keycloak.admin.client.resource.*;
 import org.keycloak.common.util.Base64;
 import org.keycloak.credential.CredentialModel;
 import org.keycloak.events.admin.OperationType;
@@ -41,17 +37,7 @@ import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.credential.PasswordCredentialModel;
 import org.keycloak.models.utils.ModelToRepresentation;
-import org.keycloak.representations.idm.ClientRepresentation;
-import org.keycloak.representations.idm.ComponentRepresentation;
-import org.keycloak.representations.idm.CredentialRepresentation;
-import org.keycloak.representations.idm.ErrorRepresentation;
-import org.keycloak.representations.idm.FederatedIdentityRepresentation;
-import org.keycloak.representations.idm.IdentityProviderRepresentation;
-import org.keycloak.representations.idm.MappingsRepresentation;
-import org.keycloak.representations.idm.RealmRepresentation;
-import org.keycloak.representations.idm.RequiredActionProviderRepresentation;
-import org.keycloak.representations.idm.RoleRepresentation;
-import org.keycloak.representations.idm.UserRepresentation;
+import org.keycloak.representations.idm.*;
 import org.keycloak.services.resources.RealmsResource;
 import org.keycloak.storage.UserStorageProvider;
 import org.keycloak.testsuite.AbstractTestRealmKeycloakTest;
@@ -64,14 +50,8 @@ import org.keycloak.testsuite.pages.LoginPage;
 import org.keycloak.testsuite.pages.PageUtils;
 import org.keycloak.testsuite.pages.ProceedPage;
 import org.keycloak.testsuite.runonserver.RunOnServerDeployment;
-import org.keycloak.testsuite.util.AdminEventPaths;
-import org.keycloak.testsuite.util.ClientBuilder;
-import org.keycloak.testsuite.util.GreenMailRule;
-import org.keycloak.testsuite.util.MailUtils;
-import org.keycloak.testsuite.util.OAuthClient;
-import org.keycloak.testsuite.util.RealmBuilder;
-import org.keycloak.testsuite.util.RoleBuilder;
-import org.keycloak.testsuite.util.UserBuilder;
+import org.keycloak.testsuite.updaters.Creator;
+import org.keycloak.testsuite.util.*;
 import org.keycloak.util.JsonSerialization;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
@@ -83,12 +63,7 @@ import javax.ws.rs.NotFoundException;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.UriBuilder;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.hamcrest.Matchers.is;
@@ -97,6 +72,7 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.keycloak.testsuite.Assert.assertNames;
@@ -130,13 +106,13 @@ public class UserTest extends AbstractAdminTest {
     @Page
     protected LoginPage loginPage;
 
-    @Deployment
-    public static WebArchive deploy() {
-        return RunOnServerDeployment.create(
-                AbstractAdminTest.class,
-                AbstractTestRealmKeycloakTest.class,
-                DummyUserFederationProviderFactory.class, DummyUserFederationProvider.class,
-                UserResource.class);
+    @After
+    public void after() {
+        realm.identityProviders().findAll().stream()
+                .forEach(ip -> realm.identityProviders().get(ip.getAlias()).remove());
+
+        realm.groups().groups().stream()
+                .forEach(g -> realm.groups().group(g.getId()).remove());
     }
 
     public String createUser() {
@@ -1674,5 +1650,138 @@ public class UserTest extends AbstractAdminTest {
         credPasswd.setValue("password");
         user.resetPassword(credPasswd);
         Assert.assertEquals(1, user.credentials().size());
+    }
+    
+    @Test
+    public void testGetGroupsForUserFullRepresentation() {
+        RealmResource realm = adminClient.realms().realm("test");
+        
+        String userName = "averagejoe";
+        String groupName = "groupWithAttribute";
+        Map<String, List<String>> attributes = new HashMap<String, List<String>>();
+        attributes.put("attribute1", Arrays.asList("attribute1","attribute2"));
+
+        UserRepresentation userRepresentation = UserBuilder
+                .edit(createUserRepresentation(userName, "joe@average.com", "average", "joe", true))
+                .addPassword("password")
+                .build();
+        
+        try (Creator<UserResource> u = Creator.create(realm, userRepresentation);
+             Creator<GroupResource> g = Creator.create(realm, GroupBuilder.create().name(groupName).attributes(attributes).build())) {
+            
+            String groupId = g.id();
+            UserResource user = u.resource();
+            user.joinGroup(groupId);
+            
+            List<GroupRepresentation> userGroups = user.groups(0, 100);
+            
+            assertFalse(userGroups.isEmpty());
+            assertTrue(userGroups.get(0).getAttributes().containsKey("attribute1"));
+        }
+    }
+
+    @Test
+    public void groupMembershipPaginated() {
+        String userId = createUser(UserBuilder.create().username("user-a").build());
+
+        for (int i = 1; i <= 10; i++) {
+            GroupRepresentation group = new GroupRepresentation();
+            group.setName("group-" + i);
+            String groupId = createGroup(realm, group).getId();
+            realm.users().get(userId).joinGroup(groupId);
+            assertAdminEvents.assertEvent(realmId, OperationType.CREATE, AdminEventPaths.userGroupPath(userId, groupId), group, ResourceType.GROUP_MEMBERSHIP);
+        }
+
+        List<GroupRepresentation> groups = realm.users().get(userId).groups(5, 6);
+        assertEquals(groups.size(), 5);
+        assertNames(groups, "group-5","group-6","group-7","group-8","group-9");
+    }
+
+    @Test
+    public void groupMembershipSearch() {
+        String userId = createUser(UserBuilder.create().username("user-b").build());
+
+        for (int i = 1; i <= 10; i++) {
+            GroupRepresentation group = new GroupRepresentation();
+            group.setName("group-" + i);
+            String groupId = createGroup(realm, group).getId();
+            realm.users().get(userId).joinGroup(groupId);
+            assertAdminEvents.assertEvent(realmId, OperationType.CREATE, AdminEventPaths.userGroupPath(userId, groupId), group, ResourceType.GROUP_MEMBERSHIP);
+        }
+
+        List<GroupRepresentation> groups = realm.users().get(userId).groups("-3", 0, 10);
+        assertEquals(1, groups.size());
+        assertNames(groups, "group-3");
+
+        List<GroupRepresentation> groups2 = realm.users().get(userId).groups("1", 0, 10);
+        assertEquals(2, groups2.size());
+        assertNames(groups2, "group-1", "group-10");
+
+        List<GroupRepresentation> groups3 = realm.users().get(userId).groups("1", 2, 10);
+        assertEquals(0, groups3.size());
+
+        List<GroupRepresentation> groups4 = realm.users().get(userId).groups("gr", 2, 10);
+        assertEquals(8, groups4.size());
+
+        List<GroupRepresentation> groups5 = realm.users().get(userId).groups("Gr", 2, 10);
+        assertEquals(8, groups5.size());
+    }
+
+    @Test
+    public void createFederatedIdentities() {
+        String identityProviderAlias = "social-provider-id";
+        String username = "federated-identities";
+        String federatedUserId = "federated-user-id";
+
+        addSampleIdentityProvider();
+
+        UserRepresentation build = UserBuilder.create()
+                .username(username)
+                .federatedLink(identityProviderAlias, federatedUserId)
+                .build();
+
+        //when
+        String userId = createUser(build, false);
+        List<FederatedIdentityRepresentation> obtainedFederatedIdentities = realm.users().get(userId).getFederatedIdentity();
+
+        //then
+        assertEquals(1, obtainedFederatedIdentities.size());
+        assertEquals(federatedUserId, obtainedFederatedIdentities.get(0).getUserId());
+        assertEquals(username, obtainedFederatedIdentities.get(0).getUserName());
+        assertEquals(identityProviderAlias, obtainedFederatedIdentities.get(0).getIdentityProvider());
+    }
+
+    @Test
+    public void createUserWithGroups() {
+        String username = "user-with-groups";
+        String groupToBeAdded = "test-group";
+
+        createGroup(realm, GroupBuilder.create().name(groupToBeAdded).build());
+
+        UserRepresentation build = UserBuilder.create()
+                .username(username)
+                .addGroups(groupToBeAdded)
+                .build();
+
+        //when
+        String userId = createUser(build);
+        List<GroupRepresentation> obtainedGroups = realm.users().get(userId).groups();
+
+        //then
+        assertEquals(1, obtainedGroups.size());
+        assertEquals(groupToBeAdded, obtainedGroups.get(0).getName());
+    }
+
+    private GroupRepresentation createGroup(RealmResource realm, GroupRepresentation group) {
+        Response response = realm.groups().add(group);
+        String groupId = ApiUtil.getCreatedId(response);
+        getCleanup().addGroupId(groupId);
+        response.close();
+
+        assertAdminEvents.assertEvent(realmId, OperationType.CREATE, AdminEventPaths.groupPath(groupId), group, ResourceType.GROUP);
+
+        // Set ID to the original rep
+        group.setId(groupId);
+        return group;
     }
 }
