@@ -330,13 +330,13 @@ module.controller('UserDetailCtrl', function($scope, realm, user, BruteForceUser
                                              Components,
                                              UserImpersonation, RequiredActions,
                                              UserStorageOperations,
-                                             $location, $http, Dialog, Notifications) {
+                                             $location, $http, Dialog, Notifications, Groups) {
     $scope.realm = realm;
     $scope.create = !user.id;
     $scope.editUsername = $scope.create || $scope.realm.editUsernameAllowed;
 
     if ($scope.create) {
-        $scope.user = { enabled: true, attributes: {} }
+        $scope.user = { enabled: true, attributes: {}, groups: [] }
     } else {
         if (!user.attributes) {
             user.attributes = {}
@@ -441,6 +441,8 @@ module.controller('UserDetailCtrl', function($scope, realm, user, BruteForceUser
         convertAttributeValuesToLists();
 
         if ($scope.create) {
+            pushSelectedGroupsToUser();
+
             User.save({
                 realm: realm.realm
             }, $scope.user, function (data, headers) {
@@ -490,6 +492,18 @@ module.controller('UserDetailCtrl', function($scope, realm, user, BruteForceUser
         }
     }
 
+    function pushSelectedGroupsToUser() {
+        var groups = $scope.user.groups;
+        if ($scope.selectedGroups) {
+            for (i = 0; i < $scope.selectedGroups.length; i++) {
+                var groupPath = $scope.selectedGroups[i].path;
+                if (!groups.includes(groupPath)) {
+                    groups.push(groupPath);
+                }
+            }
+        }
+    }
+
     $scope.reset = function() {
         $scope.user = angular.copy(user);
         $scope.changed = false;
@@ -506,6 +520,61 @@ module.controller('UserDetailCtrl', function($scope, realm, user, BruteForceUser
 
     $scope.removeAttribute = function(key) {
         delete $scope.user.attributes[key];
+    }
+
+    $scope.groupsUiSelect = {
+        minimumInputLength: 1,
+        delay: 500,
+        allowClear: true,
+        query: function (query) {
+            var data = {results: []};
+            if ('' == query.term.trim()) {
+                query.callback(data);
+                return;
+            }
+            $scope.query = {
+                realm: realm.realm,
+                search: query.term.trim(),
+                max : 20,
+                first : 0
+            };
+            Groups.query($scope.query, function(response) {
+                data.results = response;
+                query.callback(data);
+            });
+        },
+        formatResult: function(object, container, query) {
+            object.text = object.path;
+            return object.path;
+        }
+    };
+
+    $scope.removeGroup = function(list, group) {
+        for (i = 0; i < angular.copy(list).length; i++) {
+            if (group.id == list[i].id) {
+                list.splice(i, 1);
+            }
+        }
+    }
+
+    $scope.selectGroup = function(group) {
+        if (!group || !group.id) {
+            return;
+        }
+
+        if (!$scope.selectedGroups) {
+            $scope.selectedGroups = [];
+        }
+
+        $scope.selectedGroup = null;
+
+        for (i = 0; i < $scope.selectedGroups.length; i++) {
+            if ($scope.selectedGroups[i].id == group.id) {
+                return;
+            }
+        }
+
+        $scope.selectedGroups.push(group);
     }
 });
 
